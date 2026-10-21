@@ -262,3 +262,48 @@ NM's light engine becomes per-room: snapshot and pattern task keyed by room; tar
 
 ## Order of work
 S0 probe → S1a (Halo) → S1b (NM channel; may be built in parallel against the contract, merges after S1a is live) → S2 → parked items by trigger.
+
+## S0 RESULTS 2026-10-20
+
+Probe run 2026-10-20 18:5x CDT, read-only. Source: `ssh ha sqlite3 /config/universal_room_automation/data/universal_room_automation.db`, table `notification_log` (8264 rows, 2026-09-20T22:53Z to 2026-10-20T23:43Z, so "all history" is only ~30 days; widening was not possible). Room list = 47 `entry_type == room` entries in `/config/.storage/core.config_entries`. Dedupe = distinct `(timestamp to the second, coordinator_id, hazard_type, location, title)`; raw rows are 2-10x higher (per recipient/channel).
+
+### Table 1: logged `location` per distinct notification (safety / security classes)
+
+| Class | Coordinator | Distinct notifications | Logged `location` | Resolves to a URA room |
+|---|---|---|---|---|
+| safety, room name logged | safety | 7 | `Master Bathroom`, `Garage A`, `Study A Closet` (all exact room titles) | 7 / 7 |
+| safety, location logged BLANK (rows 2026-09-20 .. 2026-10-17T11:28Z; hazard_type also blank) | safety | 205 | empty; the title is `Safety alert: ... in <Room>` and the named room is an exact room title in all 205 | 205 / 205 via title only (not via `location`) |
+| security lock-check | security | 74 (63 "Lock check unavailable device", 11 "Periodic lock check") | empty | 0 / 74 |
+| perimeter person/vehicle | perimeter_alert | 2886 | 2874 camera `binary_sensor.*` entity_ids; 12 camera keys (`front_side_ptz`, `rear_ptz`, `reolinkstudybporchptz`) | 0 by room name; entity_id to area to room NOT tested (unknown), these are exterior cameras |
+
+Other coordinators (not safety/security): energy = entity names / `battery` / `main_panel` / `garage_a|b` / `generator`; optimization = `house`; stuck_signal = kind strings; hvac, presence, bayesian = blank. No `comma list` location appears in the DB (0 rows). No fire/smoke/CO/leak/gas hazard exists in the window: safety rows are only `high_co2`, `low_humidity`, `high_tvoc`. So the multi-leak join (`safety.py:1920`) and the leak path are untested by data; they are covered only by static reading.
+
+Unexplained: safety rows before 2026-10-18 carry blank `location`/`hazard_type`; from 2026-10-18T03:01Z on they are populated. I did not find the cause (the producer at `safety.py:2580-2590` passes `location=hazard.location` in the code as it stands now); treat the earlier blanks as a logging artefact of an older build, unverified.
+
+### Table 2: static classification of the 34 `async_notify` call sites (location passed)
+
+| Class | Sites (file:line) |
+|---|---|
+| room name | `hvac.py:5273` (`room_name`); safety via funnel `manager.py:1074` (`action.location`, = `hazard.location` from `safety.py:2589-2590`, room name from `_sensor_locations`/`_resolve_global_location` `safety.py:1479`, or `"unknown"`; may be a `", ".join(sorted(...))` list per `safety.py:1920`) |
+| `house` | `security.py:1379`, `optimization.py:5030`; `optimization.py:5574/5593` (`finding.target_id or "house"`, so a target id when present) |
+| `property` | security `NotificationAction` at `security.py:1062` (reaches NM through `manager.py:1074`) |
+| entity id | `perimeter_alert.py:1536` (camera `entity_id`), `button.py:2368` (test), `zone_monitoring_tripwire.py:115`; security actions `security.py:1519/1599` via funnel; `perimeter_alert.py:2975` passes `cooldown_key` (camera key) |
+| kind string | `_stuck_signal_nm.py:227/311` (`str(kind)`) |
+| pass-through | `manager.py:1074` (`action.location or None`), `notification_manager.py:3114` (re-fire, replays `data.get("location")`), `energy.py:9895` (`location or None`) |
+| explicit None | `notification_manager.py:5079/5272/5380`, `switch.py:4805` |
+| none (kwarg absent) | `hvac.py:2050/2130/4458/5311/5340/5371/5764/8909`, `hvac_override.py:8257`, `hvac_egress.py:963`, `presence.py:6128`, `transit_validator.py:2173`, `binary_sensor.py:3469` (room name is in the title only), `notification_manager.py:3700/3725`, `button.py:648` |
+
+Total 34 (the grep shows 36 hits; `perimeter_alert.py:7` and `notification_manager.py:3947` are prose). Absent or None: 20 sites, matching the plan's count. Security `NotificationAction`s (9 in `security.py`) and the safety action (1 in `safety.py:2580`) share the one funnel site.
+
+### Share that resolves to one or more URA rooms
+
+- Safety: 212 / 212 distinct notifications resolve to a room, but only 7 (3.3%) via the logged `location`; 205 only via the title string. Live code passes `hazard.location`, which is a room title by construction (`safety.py:1406-1464`) or `"unknown"` (0 observed). Comma lists need the split; none observed.
+- Security: lock-check 0 / 74 (no location). Perimeter 0 / 2886 by room name. Security `NotificationAction` sites pass `house`/`property`/entity_id. Roughly 0% resolves to a room today. Pooled safety+security+perimeter is 212 / 3172 = 6.7%, dominated by perimeter volume.
+- Gate as written in S0 ("80% of safety/security rows"): safety PASS (100% by title, 100% by code path, `location` itself only for post-2026-10-18 rows), security FAIL (~0%).
+
+### Verdict: GO for room targeting, scoped to safety
+
+1. S1 ships `_resolve_target_rooms` for **safety only**: exact room-title match plus the `", "` split, `"unknown"` or no match falls back to house-wide (all panels). Re-use `safety.py:1479`'s mapping; no new entity_id-to-area step is justified by the data.
+2. Security (intruder, investigate, lock-check, perimeter) and everything else: **house-wide**. The data demands no new rules; do not build an entity_id-to-room resolver in S1. Revival trigger: an operator ask to show perimeter alerts only on the nearest panel, plus a probe showing the camera devices carry URA-room areas.
+3. Caveats for the builder: the test fixture must use real room titles with a comma (e.g. none of the 47 room titles contains a comma; `Jaya Bedroom (Bedroom 4)` contains parentheses) and an `"unknown"` case. The probe cannot see quiet-hours/kill-switch suppressed notifications (plan caveat 1), and the window contains no life-safety hazard, so the leak/smoke path is verified by code reading only.
+4. Falsifier checked: if safety locations were mostly non-room strings the verdict would flip; the 7 logged and 205 title-derived values are all exact room titles.
