@@ -73,8 +73,8 @@
         "state": { "ok": "OK", "led_unavailable": "LED unavailable", "ks_unavailable": "Tablet unavailable", "disabled": "Disabled" }
       }
     },
-    "switch": { "led": { "name": "LED" } },
-    "number": { "boot_debounce_s": { "name": "Boot debounce (s)" } },
+    "switch": { "led": { "name": "Panel lights" } },
+    "number": { "boot_debounce_s": { "name": "Start-up delay" } },
     "button": { "release_all": { "name": "Release all" } }
   },
   "services": {

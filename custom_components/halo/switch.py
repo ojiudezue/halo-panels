@@ -30,6 +30,7 @@ class HaloLedSwitch(SwitchEntity, RestoreEntity):
     def __init__(self, entry: HaloConfigEntry) -> None:
         self._runtime = entry.runtime_data
         self._attr_unique_id = f"{entry.entry_id}_led"
+        self.entity_id = "switch.halo_led"  # stable id, independent of device name
         self._attr_device_info = house_device(self._runtime)
 
     async def async_added_to_hass(self) -> None:

@@ -20,6 +20,8 @@ from .const import (
     STATUS_LED_UNAVAILABLE,
     STATUS_OK,
 )
+from homeassistant.util import slugify
+
 from .entity import panel_device
 from .runtime import HaloRuntime, Panel
 
@@ -46,6 +48,8 @@ class _PanelSensor(SensorEntity):
         self._runtime = runtime
         self._panel = panel
         self._attr_unique_id = f"{panel.key}_{suffix}"
+        # Stable id, independent of device name.
+        self.entity_id = f"sensor.{slugify(panel.title)}_halo_{suffix}"
         self._attr_translation_key = suffix
         self._attr_device_info = panel_device(panel)
 
