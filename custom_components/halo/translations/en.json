@@ -1,0 +1,109 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Halo",
+        "description": "Panels are added afterwards, one per area.",
+        "data": { "sleep_entity": "Sleep sensor" },
+        "data_description": {
+          "sleep_entity": "While this is on, only alert and critical show; bedroom panels show only critical. Leave empty to disable the sleep rule."
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Halo is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Halo",
+        "data": { "sleep_entity": "Sleep sensor" },
+        "data_description": {
+          "sleep_entity": "While this is on, only alert and critical show; bedroom panels show only critical."
+        }
+      }
+    }
+  },
+  "config_subentries": {
+    "panel": {
+      "entry_type": "Panel",
+      "initiate_flow": { "user": "Add panel", "reconfigure": "Reconfigure panel" },
+      "step": {
+        "user": {
+          "title": "Add panel",
+          "data": {
+            "area_id": "Area",
+            "led_entity": "LED light",
+            "ks_entity": "Tablet liveness entity",
+            "bedroom": "Bedroom",
+            "enabled": "Enabled"
+          },
+          "data_description": {
+            "area_id": "Callers address the panel by this area.",
+            "led_entity": "The bridge LED, for example light.wallpanel_kitchen_led.",
+            "ks_entity": "Optional. Any entity of the tablet; unavailable means the tablet is offline.",
+            "bedroom": "While the house sleeps, a bedroom panel shows only critical.",
+            "enabled": "Off excludes the panel; callers get no_surface."
+          }
+        },
+        "reconfigure": {
+          "title": "Reconfigure panel",
+          "data": {
+            "area_id": "Area",
+            "led_entity": "LED light",
+            "ks_entity": "Tablet liveness entity",
+            "bedroom": "Bedroom",
+            "enabled": "Enabled"
+          }
+        }
+      },
+      "error": { "area_taken": "This area already has a panel." },
+      "abort": { "reconfigure_successful": "Panel updated." }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "indication": {
+        "name": "Indication",
+        "state": { "idle": "Idle", "info": "Info", "warn": "Warn", "alert": "Alert", "critical": "Critical" }
+      },
+      "status": {
+        "name": "Status",
+        "state": { "ok": "OK", "led_unavailable": "LED unavailable", "ks_unavailable": "Tablet unavailable", "disabled": "Disabled" }
+      }
+    },
+    "switch": { "led": { "name": "LED" } },
+    "number": { "boot_debounce_s": { "name": "Boot debounce" } },
+    "button": { "release_all": { "name": "Release all" } }
+  },
+  "services": {
+    "indicate": {
+      "name": "Indicate",
+      "description": "Ask the panels in these areas to show a level until released or the lease expires.",
+      "fields": {
+        "area_id": { "name": "Areas", "description": "Areas whose panels should show the indication." },
+        "owner": { "name": "Owner", "description": "Who holds the lease." },
+        "id": { "name": "Lease id", "description": "Stable id of the thing indicated. Same owner and id renews." },
+        "level": { "name": "Level", "description": "critical, alert, warn or info." },
+        "pattern": { "name": "Pattern", "description": "Override the level's default LED effect." },
+        "ttl_s": { "name": "Lease length", "description": "Seconds until the lease expires." },
+        "announce": { "name": "Announce", "description": "Spoken text (not used yet)." },
+        "card": { "name": "Card", "description": "On-screen card (not used yet)." }
+      }
+    },
+    "release": {
+      "name": "Release",
+      "description": "Release an owner's lease, or all of an owner's leases when no id is given.",
+      "fields": {
+        "owner": { "name": "Owner", "description": "Lease owner." },
+        "id": { "name": "Lease id", "description": "Lease to release. Empty releases every lease of the owner." },
+        "area_id": { "name": "Areas", "description": "Limit the release to these areas." }
+      }
+    },
+    "release_all": {
+      "name": "Release all",
+      "description": "Operator override: release every lease of every owner."
+    }
+  }
+}

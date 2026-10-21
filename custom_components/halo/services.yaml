@@ -1,0 +1,63 @@
+indicate:
+  fields:
+    area_id:
+      required: true
+      selector:
+        area:
+          multiple: true
+    owner:
+      required: true
+      example: ura
+      selector:
+        text:
+    id:
+      required: true
+      example: ura:safety:water_leak:kitchen
+      selector:
+        text:
+    level:
+      required: true
+      selector:
+        select:
+          options:
+            - critical
+            - alert
+            - warn
+            - info
+    pattern:
+      selector:
+        select:
+          options:
+            - solid
+            - blink
+            - pulse
+            - alert
+            - notify
+            - cycle
+    ttl_s:
+      default: 1800
+      selector:
+        number:
+          min: 10
+          max: 86400
+          unit_of_measurement: s
+    announce:
+      selector:
+        text:
+    card:
+      selector:
+        object:
+release:
+  fields:
+    owner:
+      required: true
+      selector:
+        text:
+    id:
+      selector:
+        text:
+    area_id:
+      selector:
+        area:
+          multiple: true
+release_all:

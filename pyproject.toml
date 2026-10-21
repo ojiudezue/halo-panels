@@ -1,0 +1,17 @@
+[project]
+name = "halo-panels"
+version = "0.1.0"
+requires-python = ">=3.14"
+
+[dependency-groups]
+test = [
+  # Pinned to the HA version running live (2026.10.1 -> 0.13.372).
+  "pytest-homeassistant-custom-component==0.13.372",
+  "hypothesis>=6.100",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
