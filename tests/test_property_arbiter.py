@@ -78,6 +78,7 @@ class Sim:
                 Lease("o", lid, level, effect, rgb4, self.now + ttl, self.seq,
                       effect in ONE_SHOT_EFFECTS),
                 lambda: normalise_snapshot(vis[0], vis[1]),
+                self.now,
             )
         elif kind == "release":
             self.oracle.release(step[1])
@@ -93,7 +94,7 @@ class Sim:
             self.led_up = step[1]
             if came_back:
                 vis = self.visible()
-                self.arb.led_returned(lambda: normalise_snapshot(vis[0], vis[1]))
+                self.arb.led_returned(lambda: normalise_snapshot(vis[0], vis[1]), self.now)
                 self.oracle.output_returned(vis)
         elif kind == "kill":
             turned_on = (not step[1]) and self.kill_on

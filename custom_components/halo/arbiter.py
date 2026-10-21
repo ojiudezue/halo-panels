@@ -20,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from .const import FOUR_BIT_SCALE, LEVEL_RANK
+from .const import FOUR_BIT_SCALE, LEVEL_RANK, RESTORE_ECHO_WINDOW_S
 
 LeaseKey = tuple[str, str]  # (owner, id)
 Snapshot = dict[str, Any]  # {"state": "on"|"off"|"unknown", "rgb_color": [r,g,b]|None}
@@ -113,16 +113,19 @@ class PanelArbiter:
         self.dirty = False
         # Last show ever sent (kept across episodes) -- see _take_snapshot.
         self.prev_show: Command | None = None
+        # When the last restore reached the LED (set by the glue on success).
+        self.restore_sent_at: float | None = None
 
     # ---------------------------------------------------------------- inputs
     def indicate(
         self,
         lease: Lease,
         snapshot_fn: Callable[[], Snapshot],
+        now: float,
     ) -> None:
         """Add or renew a lease. Snapshot only on idle -> active (R2-3)."""
         if not self.leases and self.snapshot is None:
-            self.snapshot = self._take_snapshot(snapshot_fn)
+            self.snapshot = self._take_snapshot(snapshot_fn, now)
         existing = self.leases.get(lease.key)
         if existing is not None:
             # Renewal keeps the original sequence (a renewal is not a newer lease)
@@ -141,7 +144,7 @@ class PanelArbiter:
     def expire(self, now: float) -> list[LeaseKey]:
         return self.release(lambda lease: lease.expires_at <= now)
 
-    def _take_snapshot(self, snapshot_fn: Callable[[], Snapshot]) -> Snapshot:
+    def _take_snapshot(self, snapshot_fn: Callable[[], Snapshot], now: float) -> Snapshot:
         """Read the LED, but never adopt our own colour as the snapshot (R2-3 / H2).
 
         HA state lags the bridge's MQTT echo: right after our restore the entity
@@ -150,6 +153,11 @@ class PanelArbiter:
         restore's target is the truth.
         """
         live = snapshot_fn()
+        if (
+            self.restore_sent_at is None
+            or now - self.restore_sent_at > RESTORE_ECHO_WINDOW_S
+        ):
+            return live
         last = self.last_sent
         prev = self.prev_show
         if (
@@ -163,10 +171,10 @@ class PanelArbiter:
             return snapshot_of_restore(last)
         return live
 
-    def led_returned(self, snapshot_fn: Callable[[], Snapshot]) -> None:
+    def led_returned(self, snapshot_fn: Callable[[], Snapshot], now: float) -> None:
         """LED back from unavailable (M3): re-read the snapshot if nothing was shown."""
         if self.leases and not self.episode_sent:
-            self.snapshot = self._take_snapshot(snapshot_fn)
+            self.snapshot = self._take_snapshot(snapshot_fn, now)
         self.dirty = True
 
     def one_shot_elapsed(self, key: LeaseKey) -> bool:

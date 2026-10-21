@@ -924,3 +924,37 @@ async def test_kill_switch_on_resends_current(hass: HomeAssistant, led_log: LedL
         )
     await hass.async_block_till_done()
     assert _norm(led_log.since(m, KITCHEN_LED)) == [WARN, OFF, WARN]
+
+
+async def test_echo_guard_expires_after_window(
+    hass: HomeAssistant, led_log: LedLog, freezer: FrozenDateTimeFactory
+) -> None:
+    """H2 guard is bounded: 11 s after the restore, a user-set colour equal to our last
+    show is the user's and becomes the snapshot (restored on release)."""
+    await setup_halo(hass)
+    m = led_log.mark()
+    await indicate(hass, "kitchen", "w", "warn")
+    await release(hass, "w")  # restore: off
+    freezer.tick(timedelta(seconds=11))
+    hass.states.async_set(KITCHEN_LED, "on", {"rgb_color": (0, 0, 255)})  # user picks blue
+    await indicate(hass, "kitchen", "a", "alert")
+    await release(hass, "a")
+    assert _norm(led_log.since(m, KITCHEN_LED))[-1] == (
+        "turn_on",
+        {"effect": "solid", "rgb_color": [0, 0, 255]},
+    )
+
+
+async def test_echo_guard_holds_inside_window(
+    hass: HomeAssistant, led_log: LedLog, freezer: FrozenDateTimeFactory
+) -> None:
+    """9 s after the restore the entity still showing our blue is treated as our echo."""
+    await setup_halo(hass)
+    m = led_log.mark()
+    await indicate(hass, "kitchen", "w", "warn")
+    await release(hass, "w")
+    freezer.tick(timedelta(seconds=9))
+    hass.states.async_set(KITCHEN_LED, "on", {"rgb_color": (0, 0, 255)})
+    await indicate(hass, "kitchen", "a", "alert")
+    await release(hass, "a")
+    assert _norm(led_log.since(m, KITCHEN_LED))[-1] == OFF

@@ -77,6 +77,10 @@ ONE_SHOT_RESTORE_DELAY_S: Final = 1.0
 # their leases on it (H3; replaces EVENT_SERVICE_REGISTERED for S1b).
 EVENT_HALO_READY: Final = "halo_ready"
 
+# Rung 1: the H2 lagging-echo snapshot guard only applies this long after a
+# restore was sent; later, a matching colour is the user's, not our echo.
+RESTORE_ECHO_WINDOW_S: Final = 10.0
+
 # Rung 1: LED command call timeout (seconds).
 LED_CALL_TIMEOUT_S: Final = 5
 

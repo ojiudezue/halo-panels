@@ -254,7 +254,7 @@ class HaloRuntime:
                     seq=next(self._seq),
                     one_shot=effect in ONE_SHOT_EFFECTS,
                 )
-                panel.arbiter.indicate(lease, lambda p=panel: self._read_snapshot(p))
+                panel.arbiter.indicate(lease, lambda p=panel: self._read_snapshot(p), now.timestamp())
                 self._arm_timer(panel, lease)
                 touched.append(panel)
             failed = await self._evaluate(touched)
@@ -353,7 +353,9 @@ class HaloRuntime:
             )
             if came_back and affected:
                 for panel in affected:
-                    panel.arbiter.led_returned(lambda p=panel: self._read_snapshot(p))
+                    panel.arbiter.led_returned(
+                        lambda p=panel: self._read_snapshot(p), dt_util.utcnow().timestamp()
+                    )
                 await self._evaluate(affected)
         for panel in self.panels.values():
             if entity_id in (panel.led_entity, panel.ks_entity):
@@ -520,6 +522,8 @@ class HaloRuntime:
             _LOGGER.warning("Halo: LED command to %s failed: %s", panel.led_entity, err)
             return False
         panel.last_error = None
+        if cmd.kind == "restore":
+            panel.arbiter.restore_sent_at = dt_util.utcnow().timestamp()
         panel.retry_delay_s = 0.0
         self._cancel_retry(panel)
         if cmd.kind == "show" and cmd.effect in ONE_SHOT_EFFECTS and not self._stopped:
