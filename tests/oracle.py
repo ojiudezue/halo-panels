@@ -39,8 +39,30 @@ class Oracle:
     violations: list[str] = field(default_factory=list)
     resend_ok: bool = False  # LED came back / kill switch on: one re-send is legal
 
-    def output_returned(self) -> None:
+    episode_shown: bool = False
+
+    def output_returned(self, visible: tuple[str, Any] | None = None) -> None:
+        """LED back (visible given) or kill switch on. One re-send is legal.
+
+        Plan M3: when the LED comes back and nothing was shown this episode, the
+        snapshot is re-read from the LED.
+        """
         self.resend_ok = True
+        if visible is not None and self.leases and not self.episode_shown:
+            self.pre_state = visible
+
+    def silenced(self, emitted: list[tuple[str, Any]], where: str) -> None:
+        """Kill switch went off (M2): at most one restore, the snapshot one."""
+        if len(emitted) > 1:
+            self.violations.append(f"{where}: {len(emitted)} commands on silence")
+        for cmd in emitted:
+            if cmd[0] != "restore" or cmd[1] != self.restore_payload():
+                self.violations.append(f"{where}: silence sent {cmd}")
+            self.last_cmd = cmd
+            self.shown_since_restore = False
+        if not self.leases and not self.shown_since_restore:
+            self.pre_state = None
+            self.episode_shown = False
 
     # -- inputs -------------------------------------------------------------
     def indicate(self, lid: str, level: str, expires: float, led_visible: tuple[str, Any]) -> None:
@@ -115,6 +137,7 @@ class Oracle:
                 if lease.level == "info":
                     lease.consumed = True
                 self.shown_since_restore = True
+                self.episode_shown = True
             else:
                 if top is not None and not top[1].consumed:
                     self.violations.append(
@@ -133,6 +156,9 @@ class Oracle:
                 self.shown_since_restore = False
             self.last_cmd = cmd
             self.resend_ok = False
+        if not self.leases and not self.shown_since_restore:
+            self.pre_state = None
+            self.episode_shown = False
         if not output_ok:
             return
         # liveness: after the step the last command reflects the arbitration
@@ -157,3 +183,4 @@ class Oracle:
             )
         if not self.leases and not self.shown_since_restore:
             self.pre_state = None
+            self.episode_shown = False

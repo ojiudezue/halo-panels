@@ -83,7 +83,9 @@ async def test_ha_random_sequences_hold_invariants(
             else:
                 hass.states.async_set(led, parked_state.state, parked_state.attributes)
                 led_up = True
-                oracle.output_returned()
+                oracle.output_returned(
+                    (parked_state.state, parked_state.attributes.get("rgb_color"))
+                )
             await hass.async_block_till_done()
         else:
             kill_on = not kill_on
@@ -96,6 +98,10 @@ async def test_ha_random_sequences_hold_invariants(
             await hass.async_block_till_done()
             if not kill_on:
                 oracle.output_returned()
+            else:
+                oracle.silenced([_norm(c) for c in led_log.since(mark, led)], where)
+                assert not oracle.violations, oracle.violations
+                continue
         emitted = [_norm(c) for c in led_log.since(mark, led)]
         oracle.check_step(emitted, sleeping, led_up and not kill_on, where)
         assert not oracle.violations, oracle.violations

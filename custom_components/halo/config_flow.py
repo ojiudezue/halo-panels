@@ -35,13 +35,15 @@ _SLEEP_SELECTOR = selector.EntitySelector(
 )
 
 
-def _sleep_schema(default: str | None) -> vol.Schema:
-    key = (
-        vol.Optional(CONF_SLEEP_ENTITY, default=default)
-        if default
-        else vol.Optional(CONF_SLEEP_ENTITY)
+def _sleep_schema(suggested: str | None) -> vol.Schema:
+    # suggested_value, not default: the field can be cleared (no sleep rule).
+    return vol.Schema(
+        {
+            vol.Optional(
+                CONF_SLEEP_ENTITY, description={"suggested_value": suggested}
+            ): _SLEEP_SELECTOR
+        }
     )
-    return vol.Schema({key: _SLEEP_SELECTOR})
 
 
 class HaloConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -100,10 +102,8 @@ def _panel_schema(defaults: dict[str, Any]) -> vol.Schema:
             vol.Required(
                 CONF_LED_ENTITY, default=defaults.get(CONF_LED_ENTITY, vol.UNDEFINED)
             ): selector.EntitySelector(selector.EntitySelectorConfig(domain="light")),
-            (
-                vol.Optional(CONF_KS_ENTITY, default=ks)
-                if ks
-                else vol.Optional(CONF_KS_ENTITY)
+            vol.Optional(
+                CONF_KS_ENTITY, description={"suggested_value": ks}
             ): selector.EntitySelector(),
             vol.Required(CONF_BEDROOM, default=defaults.get(CONF_BEDROOM, False)): bool,
             vol.Required(CONF_ENABLED, default=defaults.get(CONF_ENABLED, True)): bool,

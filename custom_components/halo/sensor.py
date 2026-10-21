@@ -48,7 +48,6 @@ class _PanelSensor(SensorEntity):
         self._attr_unique_id = f"{panel.key}_{suffix}"
         self._attr_translation_key = suffix
         self._attr_device_info = panel_device(panel)
-        self.entity_id = f"sensor.halo_{panel.area_id}_{suffix}"
 
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(

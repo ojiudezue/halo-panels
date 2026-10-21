@@ -15,6 +15,6 @@ def house_device(runtime: HaloRuntime) -> DeviceInfo:
 def panel_device(panel: Panel) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, panel.key)},
-        name=f"Halo {panel.title}",
-        suggested_area=None,
+        name="Halo",
+        suggested_area=panel.title,
     )

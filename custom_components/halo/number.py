@@ -37,7 +37,6 @@ class BootDebounceNumber(RestoreNumber):
         self._runtime = entry.runtime_data
         self._attr_unique_id = f"{entry.entry_id}_boot_debounce_s"
         self._attr_device_info = house_device(self._runtime)
-        self.entity_id = "number.halo_boot_debounce_s"
 
     async def async_added_to_hass(self) -> None:
         last = await self.async_get_last_number_data()

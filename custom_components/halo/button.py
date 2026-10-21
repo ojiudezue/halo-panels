@@ -26,7 +26,6 @@ class ReleaseAllButton(ButtonEntity):
         self._runtime = entry.runtime_data
         self._attr_unique_id = f"{entry.entry_id}_release_all"
         self._attr_device_info = house_device(self._runtime)
-        self.entity_id = "button.halo_release_all"
 
     async def async_press(self) -> None:
         await self._runtime.async_release_all()

@@ -304,7 +304,7 @@ async def test_info_is_one_shot(
     await setup_halo(hass)
     m = led_log.mark()
     await indicate(hass, "kitchen", "i", "info", ttl_s=60)
-    assert hass.states.get("sensor.halo_kitchen_indication").state == "info"
+    assert hass.states.get("sensor.kitchen_halo_indication").state == "info"
     # an unrelated step must not replay the notify
     hass.states.async_set(SLEEP, "off", {"x": 1})
     await indicate(hass, "master", "x", "warn")
@@ -313,7 +313,7 @@ async def test_info_is_one_shot(
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
     assert _norm(led_log.since(m, KITCHEN_LED)) == [INFO, OFF]
-    assert hass.states.get("sensor.halo_kitchen_indication").state == "idle"
+    assert hass.states.get("sensor.kitchen_halo_indication").state == "idle"
 
 
 async def test_info_under_released_higher_restores(
@@ -470,11 +470,11 @@ async def test_replay_after_unavailable(hass: HomeAssistant, led_log: LedLog) ->
     resp = await indicate(hass, "kitchen", "a", "alert")
     assert resp == {"kitchen": "unavailable"}
     assert _norm(led_log.since(m, KITCHEN_LED)) == [WARN]
-    assert hass.states.get("sensor.halo_kitchen_status").state == "led_unavailable"
+    assert hass.states.get("sensor.kitchen_halo_status").state == "led_unavailable"
     hass.states.async_set(KITCHEN_LED, "unknown")
     await hass.async_block_till_done()
     assert _norm(led_log.since(m, KITCHEN_LED)) == [WARN, ALERT]
-    assert hass.states.get("sensor.halo_kitchen_status").state == "ok"
+    assert hass.states.get("sensor.kitchen_halo_status").state == "ok"
 
 
 async def test_replay_resends_same_winner_once(hass: HomeAssistant, led_log: LedLog) -> None:
@@ -507,10 +507,10 @@ async def test_release_while_unavailable_restores_on_return(
 
 async def test_ks_unavailable_status(hass: HomeAssistant, led_log: LedLog) -> None:
     await setup_halo(hass)
-    assert hass.states.get("sensor.halo_kitchen_status").state == "ok"
+    assert hass.states.get("sensor.kitchen_halo_status").state == "ok"
     hass.states.async_set(KITCHEN_KS, "unavailable")
     await hass.async_block_till_done()
-    assert hass.states.get("sensor.halo_kitchen_status").state == "ks_unavailable"
+    assert hass.states.get("sensor.kitchen_halo_status").state == "ks_unavailable"
 
 
 # --------------------------------------------------------------- kill switch
@@ -540,12 +540,12 @@ async def test_kill_switch_off_mid_lease_then_on_reshows(
         "switch", "turn_off", {"entity_id": "switch.halo_led"}, blocking=True
     )
     await indicate(hass, "kitchen", "a", "alert")
-    assert _norm(led_log.since(m, KITCHEN_LED)) == [WARN]
+    assert _norm(led_log.since(m, KITCHEN_LED)) == [WARN, OFF]
     await hass.services.async_call(
         "switch", "turn_on", {"entity_id": "switch.halo_led"}, blocking=True
     )
     await hass.async_block_till_done()
-    assert _norm(led_log.since(m, KITCHEN_LED)) == [WARN, ALERT]
+    assert _norm(led_log.since(m, KITCHEN_LED)) == [WARN, OFF, ALERT]
 
 
 async def test_kill_switch_restored_off_blocks_stale_restore(
@@ -594,7 +594,7 @@ async def test_disabled_panel_no_surface(hass: HomeAssistant, led_log: LedLog) -
     resp = await indicate(hass, "kitchen", "x", "critical")
     assert resp == {"kitchen": "no_surface"}
     assert led_log.calls[m:] == []
-    assert hass.states.get("sensor.halo_kitchen_status").state == "disabled"
+    assert hass.states.get("sensor.kitchen_halo_status").state == "disabled"
 
 
 async def test_release_scoped_by_owner_and_area(hass: HomeAssistant, led_log: LedLog) -> None:
@@ -606,7 +606,7 @@ async def test_release_scoped_by_owner_and_area(hass: HomeAssistant, led_log: Le
     m = led_log.mark()
     # owner-wide release (no id) leaves the other owner's lease
     assert await release(hass, None, owner="ura") == {"released": 2}
-    attrs = hass.states.get("sensor.halo_kitchen_indication").attributes
+    attrs = hass.states.get("sensor.kitchen_halo_indication").attributes
     assert [a["owner"] for a in attrs["active"]] == ["other"]
     assert _norm(led_log.since(m, MASTER_LED)) == []
 
@@ -622,7 +622,7 @@ async def test_release_all_button(hass: HomeAssistant, led_log: LedLog) -> None:
     await hass.async_block_till_done()
     assert _norm(led_log.since(m, KITCHEN_LED)) == [OFF]
     assert _norm(led_log.since(m, MASTER_LED)) == [OFF]
-    assert hass.states.get("sensor.halo_kitchen_indication").state == "idle"
+    assert hass.states.get("sensor.kitchen_halo_indication").state == "idle"
 
 
 async def test_release_all_service(hass: HomeAssistant, led_log: LedLog) -> None:
@@ -638,31 +638,268 @@ async def test_indication_sensor_attributes(hass: HomeAssistant, led_log: LedLog
     await setup_halo(hass)
     await indicate(hass, "kitchen", "w", "warn")
     await indicate(hass, "kitchen", "a", "alert")
-    st = hass.states.get("sensor.halo_kitchen_indication")
+    st = hass.states.get("sensor.kitchen_halo_indication")
     assert st.state == "alert"
     assert [a["id"] for a in st.attributes["active"]] == ["a", "w"]
     assert st.attributes["last_cmd"]["effect"] == "pulse"
     assert st.attributes["last_cmd_at"] is not None
 
 
-async def test_led_call_failure_is_retried(hass: HomeAssistant, led_log: LedLog) -> None:
-    """A raising LED call is recorded and retried on the next step."""
+def _flaky(hass: HomeAssistant, led_log: LedLog, fail: dict[str, int], exc: Exception):
+    """Wrap the fake LED: the first fail[service] calls raise `exc`, then behave."""
+    real_on = hass.services._services["light"]["turn_on"].job.target  # noqa: SLF001
+    real_off = hass.services._services["light"]["turn_off"].job.target  # noqa: SLF001
+    attempts: list[str] = []
+
+    def _make(service, real):
+        async def _h(call):
+            attempts.append(service)
+            if fail.get(service, 0) > 0:
+                fail[service] -= 1
+                raise exc
+            real(call)
+
+        return _h
+
+    hass.services.async_register("light", "turn_on", _make("turn_on", real_on))
+    hass.services.async_register("light", "turn_off", _make("turn_off", real_off))
+    return attempts
+
+
+async def test_led_call_failure_is_retried(
+    hass: HomeAssistant, led_log: LedLog, freezer: FrozenDateTimeFactory
+) -> None:
+    """H1: a failed show is retried by its own backoff timer, no outside event needed."""
     from homeassistant.exceptions import HomeAssistantError
 
     await setup_halo(hass)
-    calls: list[str] = []
-
-    async def _boom(call):
-        calls.append(call.service)
-        raise HomeAssistantError("bridge down")
-
-    hass.services.async_register("light", "turn_on", _boom)
-    await indicate(hass, "kitchen", "w", "warn")
-    st = hass.states.get("sensor.halo_kitchen_indication")
+    attempts = _flaky(hass, led_log, {"turn_on": 2}, HomeAssistantError("bridge down"))
+    m = led_log.mark()
+    resp = await indicate(hass, "kitchen", "w", "warn")
+    assert resp == {"kitchen": "unavailable"}
+    st = hass.states.get("sensor.kitchen_halo_indication")
     assert "bridge down" in st.attributes["last_error"]
-    hass.states.async_set(SLEEP, "off", {"poke": 1})
+    freezer.tick(timedelta(seconds=2))  # first backoff: 2 s -> fails again
+    async_fire_time_changed(hass)
     await hass.async_block_till_done()
-    assert calls == ["turn_on", "turn_on"]
+    assert attempts == ["turn_on", "turn_on"]
+    freezer.tick(timedelta(seconds=3))  # second backoff: 4 s, not yet
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert attempts == ["turn_on", "turn_on"]
+    freezer.tick(timedelta(seconds=1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert attempts == ["turn_on", "turn_on", "turn_on"]
+    assert _norm(led_log.since(m, KITCHEN_LED)) == [WARN]
+    assert hass.states.get("sensor.kitchen_halo_indication").attributes["last_error"] is None
+
+
+async def test_failed_restore_is_retried(
+    hass: HomeAssistant, led_log: LedLog, freezer: FrozenDateTimeFactory
+) -> None:
+    from homeassistant.exceptions import HomeAssistantError
+
+    await setup_halo(hass)
+    m = led_log.mark()
+    await indicate(hass, "kitchen", "w", "warn")
+    attempts = _flaky(hass, led_log, {"turn_off": 1}, HomeAssistantError("x"))
+    await release(hass, "w")
+    assert _norm(led_log.since(m, KITCHEN_LED)) == [WARN]
+    freezer.tick(timedelta(seconds=2))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert attempts == ["turn_off", "turn_off"]
+    assert _norm(led_log.since(m, KITCHEN_LED)) == [WARN, OFF]
+
+
+async def test_retry_cancelled_on_unload(
+    hass: HomeAssistant, led_log: LedLog, freezer: FrozenDateTimeFactory
+) -> None:
+    from homeassistant.exceptions import HomeAssistantError
+
+    entry = await setup_halo(hass)
+    hass.states.async_set(KITCHEN_LED, "off")
+    attempts = _flaky(hass, led_log, {"turn_on": 99}, HomeAssistantError("x"))
+    await indicate(hass, "kitchen", "w", "warn")
+    hass.states.async_set(KITCHEN_LED, "unavailable")  # unload cannot restore
+    await hass.async_block_till_done()
+    kitchen = entry.runtime_data.panels["sub_kitchen"]
+    assert kitchen.retry_unsub is not None
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert kitchen.retry_unsub is None
+    n = len(attempts)
+    freezer.tick(timedelta(seconds=120))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert len(attempts) == n
+
+
+async def test_one_shot_consumed_only_after_successful_send(
+    hass: HomeAssistant, led_log: LedLog, freezer: FrozenDateTimeFactory
+) -> None:
+    from homeassistant.exceptions import HomeAssistantError
+
+    await setup_halo(hass)
+    _flaky(hass, led_log, {"turn_on": 1}, HomeAssistantError("x"))
+    m = led_log.mark()
+    await indicate(hass, "kitchen", "i", "info", ttl_s=600)
+    freezer.tick(timedelta(seconds=2))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert _norm(led_log.since(m, KITCHEN_LED))[:1] == [INFO]
+
+
+async def test_one_panel_failure_does_not_skip_others(
+    hass: HomeAssistant, led_log: LedLog
+) -> None:
+    """L2: a non-HA exception from one LED must not stop the other panel's command."""
+    await setup_halo(hass)
+    real_on = hass.services._services["light"]["turn_on"].job.target  # noqa: SLF001
+
+    async def _h(call):
+        if call.data["entity_id"] == KITCHEN_LED or call.data["entity_id"] == [KITCHEN_LED]:
+            raise ValueError("bad payload")
+        real_on(call)
+
+    hass.services.async_register("light", "turn_on", _h)
+    m = led_log.mark()
+    resp = await indicate(hass, ["kitchen", "master"], "w", "warn")
+    assert resp == {"kitchen": "unavailable", "master": "accepted"}
+    assert _norm(led_log.since(m, MASTER_LED)) == [WARN]
+
+
+async def test_snapshot_ignores_lagging_echo_of_own_show(hass: HomeAssistant) -> None:
+    """H2: HA state lags the bridge echo. A lease arriving right after our restore,
+    while the entity still shows our blue, must snapshot the restore target."""
+    log: list[tuple[str, dict]] = []
+    pending: list[tuple[str, dict]] = []
+
+    async def _h(call):
+        data = {k: v for k, v in call.data.items() if k != "entity_id"}
+        log.append((call.service, data))
+        if call.service == "turn_on":
+            pending.append(("on", {"rgb_color": tuple(data["rgb_color"])}))
+        else:
+            pending.append(("off", {}))
+
+    def _echo():  # deliver the oldest MQTT echo
+        state, attrs = pending.pop(0)
+        hass.states.async_set(KITCHEN_LED, state, attrs)
+
+    hass.services.async_register("light", "turn_on", _h)
+    hass.services.async_register("light", "turn_off", _h)
+    await setup_halo(hass)  # kitchen LED off
+    await indicate(hass, "kitchen", "w", "warn")
+    _echo()  # entity: on, blue
+    await release(hass, "w")  # turn_off sent, echo not yet delivered
+    await indicate(hass, "kitchen", "a", "alert")
+    await release(hass, "a")
+    assert _norm(log)[-1] == OFF
+
+
+async def test_halo_ready_event_on_setup_and_reload(
+    hass: HomeAssistant, led_log: LedLog
+) -> None:
+    """H3: services are not re-registered on reload, so callers re-assert on halo_ready."""
+    events = []
+    hass.bus.async_listen("halo_ready", events.append)
+    entry = await setup_halo(hass)
+    assert len(events) == 1
+    assert events[0].data == {"areas": ["kitchen", "master"]}
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert len(events) == 2
+
+
+async def test_kill_switch_off_silences_running_effect(
+    hass: HomeAssistant, led_log: LedLog
+) -> None:
+    """M2: switching the LED off sends one restore per active panel, then nothing."""
+    hass.states.async_set(KITCHEN_LED, "on", {"rgb_color": (0, 255, 0)})
+    await setup_halo(hass)
+    mk = led_log.mark()
+    await indicate(hass, "kitchen", "w", "warn")
+    await hass.services.async_call(
+        "switch", "turn_off", {"entity_id": "switch.halo_led"}, blocking=True
+    )
+    await hass.async_block_till_done()
+    solid_green = ("turn_on", {"effect": "solid", "rgb_color": [0, 255, 0]})
+    assert _norm(led_log.since(mk, KITCHEN_LED)) == [WARN, solid_green]
+    assert led_log.since(mk, MASTER_LED) == []  # idle panel: nothing
+    await indicate(hass, "kitchen", "c", "critical")
+    await release(hass, "w")
+    await release(hass, "c")
+    assert _norm(led_log.since(mk, KITCHEN_LED)) == [WARN, solid_green]
+
+
+async def test_one_shot_restored_after_delay(
+    hass: HomeAssistant, led_log: LedLog, freezer: FrozenDateTimeFactory
+) -> None:
+    """M1: after notify plays, restore ~1 s later, well before the TTL."""
+    hass.states.async_set(KITCHEN_LED, "on", {"rgb_color": (0, 255, 0)})
+    await setup_halo(hass)
+    m = led_log.mark()
+    await indicate(hass, "kitchen", "i", "info", ttl_s=600)
+    assert _norm(led_log.since(m, KITCHEN_LED)) == [INFO]
+    freezer.tick(timedelta(seconds=2))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    solid_green = ("turn_on", {"effect": "solid", "rgb_color": [0, 255, 0]})
+    assert _norm(led_log.since(m, KITCHEN_LED)) == [INFO, solid_green]
+    assert hass.states.get("sensor.kitchen_halo_indication").state == "info"
+    await release(hass, "i")
+    assert _norm(led_log.since(m, KITCHEN_LED)) == [INFO, solid_green]
+
+
+async def test_led_return_resnapshots_when_nothing_shown(
+    hass: HomeAssistant, led_log: LedLog
+) -> None:
+    """M3: lease arrives while the LED is unavailable; on return, snapshot the real state."""
+    await setup_halo(hass)
+    hass.states.async_set(KITCHEN_LED, "unavailable")
+    await hass.async_block_till_done()
+    m = led_log.mark()
+    await indicate(hass, "kitchen", "w", "warn")
+    hass.states.async_set(KITCHEN_LED, "on", {"rgb_color": (0, 255, 0)})
+    await hass.async_block_till_done()
+    await release(hass, "w")
+    assert _norm(led_log.since(m, KITCHEN_LED)) == [
+        WARN,
+        ("turn_on", {"effect": "solid", "rgb_color": [0, 255, 0]}),
+    ]
+
+
+async def test_expiry_racing_renewal_keeps_new_timer(
+    hass: HomeAssistant, led_log: LedLog, freezer: FrozenDateTimeFactory
+) -> None:
+    """L1: renewal wins the lock before a due expiry callback; the new handle stays tracked."""
+    import asyncio
+
+    entry = await setup_halo(hass)
+    runtime = entry.runtime_data
+    await indicate(hass, "kitchen", "w", "warn", ttl_s=60)
+    await runtime._lock.acquire()  # noqa: SLF001
+    renew = hass.async_create_task(
+        hass.services.async_call(
+            "halo",
+            "indicate",
+            {"area_id": "kitchen", "owner": "t", "id": "w", "level": "warn", "ttl_s": 600},
+            blocking=True,
+            return_response=True,
+        )
+    )
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    freezer.tick(timedelta(seconds=61))
+    async_fire_time_changed(hass)
+    for _ in range(5):
+        await asyncio.sleep(0)
+    runtime._lock.release()  # noqa: SLF001
+    await renew
+    await hass.async_block_till_done()
+    assert set(runtime.panels["sub_kitchen"].timers) == {("t", "w")}
 
 
 async def test_release_cancels_timer_handle(hass: HomeAssistant, led_log: LedLog) -> None:
@@ -686,4 +923,4 @@ async def test_kill_switch_on_resends_current(hass: HomeAssistant, led_log: LedL
             "switch", svc, {"entity_id": "switch.halo_led"}, blocking=True
         )
     await hass.async_block_till_done()
-    assert _norm(led_log.since(m, KITCHEN_LED)) == [WARN, WARN]
+    assert _norm(led_log.since(m, KITCHEN_LED)) == [WARN, OFF, WARN]

@@ -99,3 +99,16 @@ async def test_options_change_sleep_entity(hass: HomeAssistant, led_log: LedLog)
     await hass.async_block_till_done()
     assert entry.data["sleep_entity"] == "input_boolean.sleep"
     assert entry.runtime_data.sleep_entity == "input_boolean.sleep"
+
+
+async def test_options_can_clear_sleep_entity(hass: HomeAssistant, led_log: LedLog) -> None:
+    """suggested_value (not default): submitting without the field clears it."""
+    entry = await setup_halo(hass, make_entry())
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    schema_key = next(iter(result["data_schema"].schema))
+    assert schema_key.description == {"suggested_value": "binary_sensor.house_sleeping"}
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert entry.data["sleep_entity"] is None
+    assert entry.runtime_data.sleep_entity is None

@@ -18,6 +18,8 @@ jobs:
         with:
           category: integration
           ignore: brands description topics
+    # Repo is private: the HACS action cannot validate it until it is public.
+    continue-on-error: true
 
   pytest:
     runs-on: ubuntu-latest

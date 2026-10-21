@@ -30,6 +30,7 @@ STEP = st.one_of(
     st.tuples(st.just("sleep"), st.booleans()),
     st.tuples(st.just("led"), st.booleans()),
     st.tuples(st.just("kill"), st.booleans()),
+    st.tuples(st.just("oneshot")),
 )
 
 
@@ -54,6 +55,16 @@ class Sim:
 
     def floor(self):
         return self.arb.floor_rank(self.sleeping, SLEEP_MIN_LEVEL, BEDROOM_SLEEP_MIN_LEVEL)
+
+    def _apply(self, cmd):
+        if cmd.kind == "show":
+            self.led = ("on", cmd.rgb)  # bridge publishes on+colour, no effect
+            return ("show", (cmd.effect, cmd.rgb))
+        if cmd.snapshot_state == "on":
+            self.led = ("on", cmd.rgb)
+            return ("restore", ("solid", cmd.rgb))
+        self.led = ("off", None)
+        return ("restore", ("off", None))
 
     def run(self, step: tuple, i: int) -> None:
         kind = step[0]
@@ -81,28 +92,31 @@ class Sim:
             came_back = step[1] and not self.led_up
             self.led_up = step[1]
             if came_back:
-                self.arb.mark_dirty()
-                self.oracle.output_returned()
+                vis = self.visible()
+                self.arb.led_returned(lambda: normalise_snapshot(vis[0], vis[1]))
+                self.oracle.output_returned(vis)
         elif kind == "kill":
             turned_on = (not step[1]) and self.kill_on
+            turned_off = step[1] and not self.kill_on
             self.kill_on = step[1]
             if turned_on:
                 self.arb.mark_dirty()
                 self.oracle.output_returned()
+            if turned_off:
+                emitted = []
+                if self.led_up:
+                    cmd = self.arb.silence_command()
+                    if cmd is not None:
+                        emitted.append(self._apply(cmd))
+                self.oracle.silenced(emitted, f"step {i} {step}")
+                return
+        elif kind == "oneshot":
+            last = self.arb.last_sent
+            if last is None or not self.arb.one_shot_elapsed(last.lease):
+                return
 
         cmd = self.arb.evaluate(self.floor(), self.output_ok())
-        emitted = []
-        if cmd is not None:
-            if cmd.kind == "show":
-                emitted.append(("show", (cmd.effect, cmd.rgb)))
-                self.led = ("on", cmd.rgb)  # bridge publishes on+colour, no effect
-            else:
-                if cmd.snapshot_state == "on":
-                    emitted.append(("restore", ("solid", cmd.rgb)))
-                    self.led = ("on", cmd.rgb)
-                else:
-                    emitted.append(("restore", ("off", None)))
-                    self.led = ("off", None)
+        emitted = [self._apply(cmd)] if cmd is not None else []
         self.oracle.check_step(emitted, self.sleeping, self.output_ok(), f"step {i} {step}")
 
 

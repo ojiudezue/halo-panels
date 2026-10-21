@@ -65,6 +65,18 @@ DEFAULT_TTL_S: Final = 1800
 MIN_TTL_S: Final = 10
 MAX_TTL_S: Final = 86400
 
+# Rung 1: failed LED command retry backoff (H1): 2, 4, 8 ... capped at 60 s.
+RETRY_BASE_S: Final = 2.0
+RETRY_MAX_S: Final = 60.0
+
+# Rung 1: after a one-shot (`notify`) is sent, restore explicitly after this delay
+# so the bridge's stale lastSolid is not what remains (M1).
+ONE_SHOT_RESTORE_DELAY_S: Final = 1.0
+
+# Bus event fired when an entry finishes setup (incl. reload): callers re-assert
+# their leases on it (H3; replaces EVENT_SERVICE_REGISTERED for S1b).
+EVENT_HALO_READY: Final = "halo_ready"
+
 # Rung 1: LED command call timeout (seconds).
 LED_CALL_TIMEOUT_S: Final = 5
 

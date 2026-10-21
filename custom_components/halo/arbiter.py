@@ -94,6 +94,12 @@ def restore_command(snapshot: Snapshot | None) -> Command:
     return Command(kind="restore", snapshot_state="off")
 
 
+def snapshot_of_restore(cmd: Command) -> Snapshot:
+    if cmd.snapshot_state == "on":
+        return {"state": "on", "rgb_color": list(cmd.rgb) if cmd.rgb else None}
+    return {"state": "off", "rgb_color": None}
+
+
 class PanelArbiter:
     """Lease set + display bookkeeping for one panel."""
 
@@ -105,6 +111,8 @@ class PanelArbiter:
         self.last_sent: Command | None = None
         self.episode_sent = False
         self.dirty = False
+        # Last show ever sent (kept across episodes) -- see _take_snapshot.
+        self.prev_show: Command | None = None
 
     # ---------------------------------------------------------------- inputs
     def indicate(
@@ -114,7 +122,7 @@ class PanelArbiter:
     ) -> None:
         """Add or renew a lease. Snapshot only on idle -> active (R2-3)."""
         if not self.leases and self.snapshot is None:
-            self.snapshot = snapshot_fn()
+            self.snapshot = self._take_snapshot(snapshot_fn)
         existing = self.leases.get(lease.key)
         if existing is not None:
             # Renewal keeps the original sequence (a renewal is not a newer lease)
@@ -132,6 +140,72 @@ class PanelArbiter:
 
     def expire(self, now: float) -> list[LeaseKey]:
         return self.release(lambda lease: lease.expires_at <= now)
+
+    def _take_snapshot(self, snapshot_fn: Callable[[], Snapshot]) -> Snapshot:
+        """Read the LED, but never adopt our own colour as the snapshot (R2-3 / H2).
+
+        HA state lags the bridge's MQTT echo: right after our restore the entity
+        can still show the last show's colour. If the last command we sent was a
+        restore and the live state still looks like the show before it, the
+        restore's target is the truth.
+        """
+        live = snapshot_fn()
+        last = self.last_sent
+        prev = self.prev_show
+        if (
+            last is not None
+            and last.kind == "restore"
+            and prev is not None
+            and live.get("state") == "on"
+            and live.get("rgb_color") is not None
+            and tuple(live["rgb_color"]) == prev.rgb
+        ):
+            return snapshot_of_restore(last)
+        return live
+
+    def led_returned(self, snapshot_fn: Callable[[], Snapshot]) -> None:
+        """LED back from unavailable (M3): re-read the snapshot if nothing was shown."""
+        if self.leases and not self.episode_sent:
+            self.snapshot = self._take_snapshot(snapshot_fn)
+        self.dirty = True
+
+    def one_shot_elapsed(self, key: LeaseKey) -> bool:
+        """The one-shot's play time is over (M1): put the snapshot back explicitly."""
+        last = self.last_sent
+        if last is None or last.kind != "show" or last.lease != key:
+            return False
+        lease = self.leases.get(key)
+        if lease is None or not lease.consumed:
+            return False
+        self.dirty = True
+        return True
+
+    def send_failed(self, cmd: Command) -> None:
+        """The command did not reach the LED: undo what evaluate() assumed (H1)."""
+        self.dirty = True
+        if cmd.kind == "show":
+            lease = self.leases.get(cmd.lease) if cmd.lease else None
+            if lease is not None and lease.one_shot:
+                lease.consumed = False
+        elif not self.leases and self.snapshot is None:
+            # The episode closed on this restore; reopen it so it is retried.
+            self.snapshot = snapshot_of_restore(cmd)
+            self.episode_sent = True
+        if cmd.kind == "restore":
+            self.last_sent = None
+
+    def silence_command(self) -> Command | None:
+        """Kill switch going off (M2): one restore if an effect may be running."""
+        if not self.episode_sent:
+            return None
+        if not self.dirty and self.last_sent is not None and self.last_sent.kind == "restore":
+            return None
+        cmd = restore_command(self.snapshot)
+        self.last_sent = cmd
+        self.dirty = False
+        if not self.leases:
+            self._end_episode()
+        return cmd
 
     def mark_dirty(self) -> None:
         """Hardware may have lost what we showed (LED came back / kill switch on)."""
@@ -185,7 +259,12 @@ class PanelArbiter:
             else:
                 desired = show
         elif self.episode_sent:
-            desired = restore_command(self.snapshot)
+            if self.last_sent is not None and self.last_sent.kind == "restore":
+                # The restore already reached the LED (send_failed clears
+                # last_sent when it did not); nothing left to put back.
+                desired = None
+            else:
+                desired = restore_command(self.snapshot)
         else:
             desired = None
 
@@ -212,10 +291,11 @@ class PanelArbiter:
         self.dirty = False
         if desired.kind == "show":
             self.episode_sent = True
+            self.prev_show = desired
             if top is not None and top.one_shot:
-                top.consumed = True
+                top.consumed = True  # undone by send_failed() if it never arrived
         elif not self.leases:
-            self._end_episode(keep_last=True)
+            self._end_episode()
         return desired
 
     def unload_command(self, output_ok: bool) -> Command | None:
@@ -230,9 +310,8 @@ class PanelArbiter:
         self._end_episode()
         return cmd
 
-    def _end_episode(self, keep_last: bool = False) -> None:
+    def _end_episode(self) -> None:
+        # last_sent / prev_show are kept: dedupe and _take_snapshot need them.
         self.snapshot = None
         self.episode_sent = False
         self.dirty = False
-        if not keep_last:
-            self.last_sent = None

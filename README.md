@@ -26,11 +26,15 @@ While the sleep sensor is on (or unknown, or inside the boot debounce window), o
 
 ## Entities
 
-- `sensor.halo_<area>_indication`: winning level or `idle`; attributes `active` leases, `last_cmd`, `last_cmd_at`, `last_error`.
-- `sensor.halo_<area>_status`: `ok` / `led_unavailable` / `ks_unavailable` / `disabled`.
-- `switch.halo_led`: master kill. Off = no LED command is sent, ever.
+- `sensor.<area>_halo_indication`: winning level or `idle`; attributes `active` leases, `last_cmd`, `last_cmd_at`, `last_error`.
+- `sensor.<area>_halo_status`: `ok` / `led_unavailable` / `ks_unavailable` / `disabled`.
+- `switch.halo_led`: master kill. Turning it off sends one restore per active panel, then nothing until it is on again.
 - `number.halo_boot_debounce_s` (default 180, 0 disables).
 - `button.halo_release_all`.
+
+## Events
+
+`halo_ready` (`{areas: [...]}`) fires at the end of every entry setup, including reloads. Callers re-assert their leases on it.
 
 ## Development
 

@@ -22,6 +22,7 @@ from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, Home
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
+    async_call_later,
     async_track_point_in_utc_time,
     async_track_state_change_event,
 )
@@ -38,11 +39,15 @@ from .const import (
     CONF_LED_ENTITY,
     CONF_SLEEP_ENTITY,
     DEFAULT_BOOT_DEBOUNCE_S,
+    EVENT_HALO_READY,
     INDICATION_IDLE,
     LED_CALL_TIMEOUT_S,
     LEVEL_EFFECT_MAP,
     LEVEL_RANK,
     ONE_SHOT_EFFECTS,
+    ONE_SHOT_RESTORE_DELAY_S,
+    RETRY_BASE_S,
+    RETRY_MAX_S,
     RESULT_ACCEPTED,
     RESULT_NO_SURFACE,
     RESULT_SUPPRESSED_SLEEP,
@@ -77,6 +82,9 @@ class Panel:
     last_cmd_at: datetime | None = None
     last_error: str | None = None
     timers: dict[LeaseKey, CALLBACK_TYPE] = field(default_factory=dict)
+    retry_unsub: CALLBACK_TYPE | None = None
+    retry_delay_s: float = 0.0
+    one_shot_unsub: CALLBACK_TYPE | None = None
 
 
 class HaloRuntime:
@@ -149,6 +157,12 @@ class HaloRuntime:
         self._schedule_debounce_end()
         async with self._lock:
             await self._evaluate(self.by_area.values())
+        # S1b re-assert trigger: services live in async_setup and are never
+        # re-registered on an entry reload, so EVENT_SERVICE_REGISTERED would not
+        # fire; callers listen for this instead (H3).
+        self.hass.bus.async_fire(
+            EVENT_HALO_READY, {"areas": sorted(self.by_area)}
+        )
 
     async def async_stop(self) -> None:
         """Restore every active panel, then cancel timers and listeners (R2-4)."""
@@ -163,6 +177,10 @@ class HaloRuntime:
                 for unsub in panel.timers.values():
                     unsub()
                 panel.timers.clear()
+                self._cancel_retry(panel)
+                if panel.one_shot_unsub is not None:
+                    panel.one_shot_unsub()
+                    panel.one_shot_unsub = None
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
@@ -177,9 +195,22 @@ class HaloRuntime:
             self.led_enabled = enabled
             if not self._started:
                 return
-            if enabled and not was:
+            if not enabled and was:
+                # M2: one restore per active panel silences a running effect;
+                # then nothing is sent until the switch is on again.
                 for panel in self.by_area.values():
-                    panel.arbiter.mark_dirty()
+                    self._cancel_retry(panel)
+                    if not self._led_available(panel):
+                        continue
+                    cmd = panel.arbiter.silence_command()
+                    if cmd is not None:
+                        await self._send(panel, cmd)
+                await self._persist()
+                self._notify_all()
+                return
+            # Switching on needs no dirty mark: silence left last_sent = restore,
+            # so any eligible lease differs and is sent; a panel whose LED was
+            # unavailable at switch-off is marked dirty when the LED returns.
             await self._evaluate(self.by_area.values())
 
     async def async_set_boot_debounce(self, seconds: float) -> None:
@@ -226,9 +257,9 @@ class HaloRuntime:
                 panel.arbiter.indicate(lease, lambda p=panel: self._read_snapshot(p))
                 self._arm_timer(panel, lease)
                 touched.append(panel)
-            await self._evaluate(touched)
+            failed = await self._evaluate(touched)
             for panel in touched:
-                if not self._led_available(panel):
+                if not self._led_available(panel) or panel.key in failed:
                     result[panel.area_id] = RESULT_UNAVAILABLE
                 else:
                     floor = self._floor(panel)
@@ -279,21 +310,29 @@ class HaloRuntime:
         if old is not None:
             old()
 
+        handle: list[CALLBACK_TYPE] = []
+
         async def _expired(_now: datetime, panel: Panel = panel) -> None:
             async with self._lock:
                 if self._stopped:
                     return
+                # L1: only drop the handle if it is still ours (a renewal that
+                # won the lock first has already armed a newer one).
+                if handle and panel.timers.get(lease.key) is handle[0]:
+                    del panel.timers[lease.key]
                 gone = panel.arbiter.expire(dt_util.utcnow().timestamp())
                 for key in gone:
                     unsub = panel.timers.pop(key, None)
-                    if unsub is not None and key != lease.key:
+                    if unsub is not None:
                         unsub()
-                panel.timers.pop(lease.key, None)
                 await self._evaluate([panel])
 
-        panel.timers[lease.key] = async_track_point_in_utc_time(
-            self.hass, _expired, dt_util.utc_from_timestamp(lease.expires_at)
+        handle.append(
+            async_track_point_in_utc_time(
+                self.hass, _expired, dt_util.utc_from_timestamp(lease.expires_at)
+            )
         )
+        panel.timers[lease.key] = handle[0]
 
     async def _async_on_sleep_change(self, _event: Event[EventStateChangedData]) -> None:
         async with self._lock:
@@ -314,7 +353,7 @@ class HaloRuntime:
             )
             if came_back and affected:
                 for panel in affected:
-                    panel.arbiter.mark_dirty()
+                    panel.arbiter.led_returned(lambda p=panel: self._read_snapshot(p))
                 await self._evaluate(affected)
         for panel in self.panels.values():
             if entity_id in (panel.led_entity, panel.ks_entity):
@@ -383,18 +422,68 @@ class HaloRuntime:
         return top.level if top is not None else INDICATION_IDLE
 
     # ----------------------------------------------------------------- core
-    async def _evaluate(self, panels: Iterable[Panel]) -> None:
-        """One arbiter step for the given panels. Caller holds the lock."""
+    async def _evaluate(self, panels: Iterable[Panel]) -> set[str]:
+        """One arbiter step for the given panels. Caller holds the lock.
+
+        Returns the keys of panels whose command failed in this step.
+        """
         sends: list[tuple[Panel, Command]] = []
         for panel in list(panels):
             cmd = panel.arbiter.evaluate(self._floor(panel), self._output_ok(panel))
             if cmd is not None:
                 sends.append((panel, cmd))
         await self._persist()  # snapshot hits disk before the first show
+        failed: set[str] = set()
         for panel, cmd in sends:
-            await self._send(panel, cmd)
+            if not await self._send(panel, cmd):
+                failed.add(panel.key)
+        if failed:
+            await self._persist()
+        self._notify_all()
+        return failed
+
+    def _notify_all(self) -> None:
         for panel in self.panels.values():
             async_dispatcher_send(self.hass, SIGNAL_PANEL_UPDATED.format(panel.key))
+
+    # ---------------------------------------------------------------- retry
+    def _cancel_retry(self, panel: Panel) -> None:
+        if panel.retry_unsub is not None:
+            panel.retry_unsub()
+            panel.retry_unsub = None
+
+    def _schedule_retry(self, panel: Panel) -> None:
+        """H1: tracked per-panel retry with exponential backoff."""
+        self._cancel_retry(panel)
+        panel.retry_delay_s = min(
+            RETRY_MAX_S, panel.retry_delay_s * 2 if panel.retry_delay_s else RETRY_BASE_S
+        )
+
+        async def _retry(_now: datetime, panel: Panel = panel) -> None:
+            panel.retry_unsub = None
+            async with self._lock:
+                if self._stopped:
+                    return
+                await self._evaluate([panel])
+
+        panel.retry_unsub = async_call_later(self.hass, panel.retry_delay_s, _retry)
+
+    def _schedule_one_shot_restore(self, panel: Panel, cmd: Command) -> None:
+        """M1: after a one-shot plays, restore explicitly (bridge lastSolid is stale)."""
+        if panel.one_shot_unsub is not None:
+            panel.one_shot_unsub()
+
+        async def _elapsed(_now: datetime, panel: Panel = panel) -> None:
+            panel.one_shot_unsub = None
+            async with self._lock:
+                if self._stopped:
+                    return
+                if panel.arbiter.one_shot_elapsed(cmd.lease):
+                    await self._evaluate([panel])
+
+        panel.one_shot_unsub = async_call_later(
+            self.hass, ONE_SHOT_RESTORE_DELAY_S, _elapsed
+        )
 
     async def _persist(self) -> None:
         current = {
@@ -407,7 +496,8 @@ class HaloRuntime:
             self._persisted = current
             await self._store.async_save(current)
 
-    async def _send(self, panel: Panel, cmd: Command) -> None:
+    async def _send(self, panel: Panel, cmd: Command) -> bool:
+        """Send one command. Never raises; a failure schedules a retry (H1, L2)."""
         if cmd.kind == "restore" and cmd.snapshot_state == "off":
             service, data = "turn_off", {"entity_id": panel.led_entity}
         else:
@@ -422,19 +512,16 @@ class HaloRuntime:
                 await self.hass.services.async_call(
                     "light", service, data, blocking=True
                 )
-            panel.last_error = None
-        except (HomeAssistantError, TimeoutError) as err:
+        except Exception as err:  # noqa: BLE001 -- one panel must not stop the others
             panel.last_error = f"{type(err).__name__}: {err}"
-            if cmd.kind == "restore" and not panel.arbiter.leases:
-                # The episode already closed; reopen it so the restore is retried
-                # (next step, LED return, or next setup via the persisted snapshot).
-                panel.arbiter.load_stale_snapshot(
-                    {
-                        "state": cmd.snapshot_state,
-                        "rgb_color": list(cmd.rgb) if cmd.rgb else None,
-                    }
-                )
-                await self._persist()
-            else:
-                panel.arbiter.mark_dirty()  # retried on the next step
+            panel.arbiter.send_failed(cmd)
+            if not self._stopped:
+                self._schedule_retry(panel)
             _LOGGER.warning("Halo: LED command to %s failed: %s", panel.led_entity, err)
+            return False
+        panel.last_error = None
+        panel.retry_delay_s = 0.0
+        self._cancel_retry(panel)
+        if cmd.kind == "show" and cmd.effect in ONE_SHOT_EFFECTS and not self._stopped:
+            self._schedule_one_shot_restore(panel, cmd)
+        return True
